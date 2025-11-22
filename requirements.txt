@@ -1,0 +1,13 @@
+langchain
+langgraph
+langchain-google-genai
+google-generativeai
+google-auth
+pydantic
+python-dotenv
+click
+tqdm
+pytest
+pytest-asyncio
+black
+mypy
