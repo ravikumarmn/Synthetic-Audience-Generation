@@ -1,8 +1,10 @@
 langchain
 langgraph
 langchain-google-genai
+langchain-openai
 google-generativeai
 google-auth
+openai
 pydantic
 python-dotenv
 click
@@ -11,3 +13,7 @@ pytest
 pytest-asyncio
 black
 mypy
+matplotlib
+networkx
+ipython
+graphviz
