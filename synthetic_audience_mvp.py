@@ -33,7 +33,7 @@ try:
     IPYTHON_AVAILABLE = True
 except ImportError:
     IPYTHON_AVAILABLE = False
-    logger.warning("IPython not available - graph visualization will be limited")
+
 
 # LangChain and LangGraph
 from langchain_core.prompts import PromptTemplate
