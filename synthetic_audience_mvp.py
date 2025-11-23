@@ -15,10 +15,11 @@ import time
 import random
 from typing import Dict, List, TypedDict, Optional, Tuple, Any
 from dataclasses import dataclass
+from collections import Counter
 import logging
 
 # Core dependencies
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
 from tqdm import tqdm
 import click
@@ -59,7 +60,8 @@ class FilterDetails(BaseModel):
     age_filter_complete: bool = Field(default=True)
     ethnicity_filter_complete: bool = Field(default=True)
 
-    @validator("age_proportions", "gender_proportions", "ethnicity_proportions")
+    @field_validator("age_proportions", "gender_proportions", "ethnicity_proportions")
+    @classmethod
     def validate_proportions_sum_to_100(cls, v):
         """Ensure proportions sum to 100."""
         total = sum(v.values())
@@ -157,28 +159,39 @@ class ProcessingTemplates(BaseModel):
 # ============================================================================
 
 
-class SyntheticAudienceState(TypedDict):
+class SyntheticAudienceState(TypedDict, total=False):
     """State management for LangGraph workflow."""
 
-    # Input data
+    # Input data (required)
+    input_file: str
+    output_file: str
+
+    # Parsed data (added during workflow)
     filter_details: FilterDetails
     input_personas: List[InputPersona]
 
-    # Processing data
+    # Processing data (added during workflow)
     demographic_schedule: List[DemographicAssignment]
     processing_templates: ProcessingTemplates
 
-    # Generation data
+    # Generation data (added during workflow)
     current_profile_index: int
     current_demographic: Optional[DemographicAssignment]
     generated_content: Optional[BehavioralContent]
+    generation_complete: bool
 
-    # Output data
+    # Output data (added during workflow)
     completed_profiles: List[SyntheticProfile]
 
-    # Metadata
+    # Metadata (added during workflow)
     processing_errors: List[str]
     generation_stats: Dict[str, Any]
+    assembly_complete: bool
+    output_written: bool
+    output_path: str
+
+    # Internal state
+    _llm_generator: Any
 
 
 # ============================================================================
@@ -309,41 +322,108 @@ class DistributionCalculator:
         age_props: Dict[str, int],
         ethnicity_props: Dict[str, int],
     ) -> List[DemographicAssignment]:
-        """Generate complete demographic assignment schedule."""
-        logger.info(f"Generating demographic schedule for {total} profiles")
+        """
+        Generate demographic assignment schedule with EXACT quota compliance.
 
-        # Calculate distributions
-        gender_dist = DistributionCalculator.calculate_gender_distribution(
-            total, gender_props
-        )
-        age_gender_dist = DistributionCalculator.calculate_age_distribution(
-            gender_dist, age_props
-        )
-        ethnicity_dist = DistributionCalculator.calculate_ethnicity_distribution(
-            age_gender_dist, ethnicity_props
-        )
+        FIXED VERSION: Uses simple direct assignment to ensure exact quotas.
+        Previous hierarchical approach caused quota violations.
+        """
+        logger.info(f"Generating FIXED demographic schedule for {total} profiles")
 
-        # Generate assignment schedule
+        # Step 1: Calculate exact counts for each dimension using largest remainder method
+        def calculate_exact_counts(
+            proportions: Dict[str, int], total: int
+        ) -> Dict[str, int]:
+            allocations = {}
+            remainders = {}
+
+            for category, percentage in proportions.items():
+                exact_value = (percentage / 100.0) * total
+                allocations[category] = int(exact_value)
+                remainders[category] = exact_value - allocations[category]
+
+            # Distribute remaining using largest remainder method
+            total_allocated = sum(allocations.values())
+            remaining = total - total_allocated
+
+            if remaining > 0:
+                sorted_remainders = sorted(
+                    remainders.items(), key=lambda x: x[1], reverse=True
+                )
+                for i in range(remaining):
+                    category = sorted_remainders[i][0]
+                    allocations[category] += 1
+
+            return allocations
+
+        gender_counts = calculate_exact_counts(gender_props, total)
+        age_counts = calculate_exact_counts(age_props, total)
+        ethnicity_counts = calculate_exact_counts(ethnicity_props, total)
+
+        logger.info(f"Target gender distribution: {gender_counts}")
+        logger.info(f"Target age distribution: {age_counts}")
+        logger.info(f"Target ethnicity distribution: {ethnicity_counts}")
+
+        # Step 2: Create assignment pools
+        gender_pool = []
+        for gender, count in gender_counts.items():
+            gender_pool.extend([gender] * count)
+
+        age_pool = []
+        for age_bucket, count in age_counts.items():
+            age_pool.extend([age_bucket] * count)
+
+        ethnicity_pool = []
+        for ethnicity, count in ethnicity_counts.items():
+            ethnicity_pool.extend([ethnicity] * count)
+
+        # Step 3: Shuffle pools to randomize assignments
+        random.shuffle(gender_pool)
+        random.shuffle(age_pool)
+        random.shuffle(ethnicity_pool)
+
+        # Step 4: Create assignments by combining pools
         schedule = []
-        profile_index = 0
+        for i in range(total):
+            assignment = DemographicAssignment(
+                age_bucket=age_pool[i],
+                gender=gender_pool[i],
+                ethnicity=ethnicity_pool[i],
+                profile_index=i,
+            )
+            schedule.append(assignment)
 
-        for gender in gender_dist.keys():
-            for age_bucket in age_props.keys():
-                for ethnicity in ethnicity_props.keys():
-                    count = ethnicity_dist[gender][age_bucket][ethnicity]
-                    for _ in range(count):
-                        assignment = DemographicAssignment(
-                            age_bucket=age_bucket,
-                            gender=gender,
-                            ethnicity=ethnicity,
-                            profile_index=profile_index,
-                        )
-                        schedule.append(assignment)
-                        profile_index += 1
+        # Step 5: Validate the schedule (ensure exact compliance)
+        actual_gender = dict(Counter(assignment.gender for assignment in schedule))
+        actual_age = dict(Counter(assignment.age_bucket for assignment in schedule))
+        actual_ethnicity = dict(
+            Counter(assignment.ethnicity for assignment in schedule)
+        )
 
-        # Shuffle to randomize order
-        random.shuffle(schedule)
+        # Validate by comparing counts for each category (order-independent)
+        def validate_distribution(expected, actual, category_name):
+            for category, expected_count in expected.items():
+                actual_count = actual.get(category, 0)
+                if actual_count != expected_count:
+                    raise ValueError(
+                        f"{category_name} distribution validation failed for {category}: "
+                        f"expected {expected_count}, got {actual_count}"
+                    )
+            # Check for unexpected categories in actual
+            for category in actual:
+                if category not in expected:
+                    raise ValueError(
+                        f"{category_name} distribution validation failed: "
+                        f"unexpected category {category} with count {actual[category]}"
+                    )
 
+        validate_distribution(gender_counts, actual_gender, "Gender")
+        validate_distribution(age_counts, actual_age, "Age")
+        validate_distribution(ethnicity_counts, actual_ethnicity, "Ethnicity")
+
+        logger.info(
+            f"✅ FIXED schedule validation passed - exact quota compliance achieved"
+        )
         logger.info(f"Generated schedule with {len(schedule)} assignments")
         return schedule
 
@@ -761,6 +841,262 @@ Generate the JSON now:"""
 
 
 # ============================================================================
+# LANGGRAPH WORKFLOW NODES
+# ============================================================================
+
+
+def load_json_node(state: SyntheticAudienceState) -> SyntheticAudienceState:
+    """Load and validate input JSON file."""
+    logger.info("Loading and validating input JSON...")
+
+    input_file = state["input_file"]
+    if not input_file:
+        raise ValueError("input_file not provided in state")
+
+    with open(input_file, "r") as f:
+        raw_data = json.load(f)
+
+    request_data = RequestData(**raw_data)
+    filter_details = request_data.get_filter_details()
+    input_personas = request_data.get_personas()
+
+    logger.info(f"Loaded request for {filter_details.user_req_responses} profiles")
+
+    return {
+        **state,
+        "filter_details": filter_details,
+        "input_personas": input_personas,
+        "processing_errors": [],
+        "generation_stats": {},
+    }
+
+
+def distribution_builder_node(state: SyntheticAudienceState) -> SyntheticAudienceState:
+    """Generate demographic distribution schedule."""
+    logger.info("Building demographic distribution schedule...")
+
+    filter_details = state["filter_details"]
+
+    demographic_schedule = DistributionCalculator.generate_demographic_schedule(
+        filter_details.user_req_responses,
+        filter_details.gender_proportions,
+        filter_details.age_proportions,
+        filter_details.ethnicity_proportions,
+    )
+
+    return {
+        **state,
+        "demographic_schedule": demographic_schedule,
+        "current_profile_index": 0,
+        "current_demographic": None,
+        "generated_content": None,
+        "completed_profiles": [],
+    }
+
+
+def persona_processor_node(state: SyntheticAudienceState) -> SyntheticAudienceState:
+    """Extract behavioral templates from personas."""
+    logger.info("Processing personas to extract behavioral templates...")
+
+    input_personas = state["input_personas"]
+    processing_templates = PersonaProcessor.extract_behavioral_templates(input_personas)
+
+    return {
+        **state,
+        "processing_templates": processing_templates,
+    }
+
+
+def llm_generator_node(state: SyntheticAudienceState) -> SyntheticAudienceState:
+    """Generate behavioral content for current demographic assignment."""
+    demographic_schedule = state["demographic_schedule"]
+    current_index = state["current_profile_index"]
+    processing_templates = state["processing_templates"]
+
+    # Check if generation is complete
+    if current_index >= len(demographic_schedule):
+        logger.info("All profiles generated successfully")
+        return {
+            **state,
+            "generation_complete": True,
+        }
+
+    # Get current demographic assignment
+    current_demographic = demographic_schedule[current_index]
+
+    logger.info(
+        f"Generating profile {current_index + 1}/{len(demographic_schedule)}: "
+        f"{current_demographic.gender}, {current_demographic.age_bucket}, {current_demographic.ethnicity}"
+    )
+
+    # Initialize LLM generator if not exists
+    if not hasattr(state, "_llm_generator"):
+        state["_llm_generator"] = LLMContentGenerator()
+
+    try:
+        # Generate behavioral content
+        behavioral_content = state["_llm_generator"].generate_content(
+            processing_templates
+        )
+
+        # Create complete profile
+        profile = SyntheticProfile(
+            age_bucket=current_demographic.age_bucket,
+            gender=current_demographic.gender,
+            ethnicity=current_demographic.ethnicity,
+            about=behavioral_content.about,
+            goalsAndMotivations=behavioral_content.goalsAndMotivations,
+            frustrations=behavioral_content.frustrations,
+            needState=behavioral_content.needState,
+            occasions=behavioral_content.occasions,
+            profile_id=current_index + 1,
+        )
+
+        # Add to completed profiles
+        completed_profiles = state.get("completed_profiles", [])
+        completed_profiles.append(profile)
+
+        return {
+            **state,
+            "current_demographic": current_demographic,
+            "generated_content": behavioral_content,
+            "completed_profiles": completed_profiles,
+            "current_profile_index": current_index + 1,
+        }
+
+    except Exception as e:
+        error_msg = f"Failed to generate profile {current_index + 1}: {str(e)}"
+        logger.error(error_msg)
+
+        processing_errors = state.get("processing_errors", [])
+        processing_errors.append(error_msg)
+
+        return {
+            **state,
+            "processing_errors": processing_errors,
+            "generation_complete": True,  # Stop on error
+        }
+
+
+def profile_assembler_node(state: SyntheticAudienceState) -> SyntheticAudienceState:
+    """Assemble and validate final audience profiles."""
+    logger.info("Assembling and validating final profiles...")
+
+    completed_profiles = state["completed_profiles"]
+    filter_details = state["filter_details"]
+
+    # Validate profile count
+    expected_count = filter_details.user_req_responses
+    actual_count = len(completed_profiles)
+
+    if actual_count != expected_count:
+        error_msg = (
+            f"Profile count mismatch: expected {expected_count}, got {actual_count}"
+        )
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+
+    # Validate distribution accuracy
+    distribution_accuracy = SyntheticAudienceGenerator._validate_distribution_static(
+        completed_profiles, filter_details
+    )
+
+    generation_stats = {
+        "total_profiles": len(completed_profiles),
+        "generation_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "distribution_accuracy": distribution_accuracy,
+    }
+
+    logger.info(f"Successfully assembled {len(completed_profiles)} profiles")
+
+    return {
+        **state,
+        "generation_stats": generation_stats,
+        "assembly_complete": True,
+    }
+
+
+def output_writer_node(state: SyntheticAudienceState) -> SyntheticAudienceState:
+    """Write final audience to JSON file."""
+    logger.info("Writing output to JSON file...")
+
+    completed_profiles = state["completed_profiles"]
+    generation_stats = state["generation_stats"]
+    output_file = state.get("output_file", "synthetic_audience.json")
+    input_file = state.get("input_file", "unknown")
+
+    # Prepare output data
+    output_data = {
+        "synthetic_audience": [profile.model_dump() for profile in completed_profiles],
+        "generation_metadata": {
+            **generation_stats,
+            "input_file": input_file,
+        },
+    }
+
+    # Write to file
+    with open(output_file, "w") as f:
+        json.dump(output_data, f, indent=2)
+
+    logger.info(f"Output written to {output_file}")
+
+    return {
+        **state,
+        "output_written": True,
+        "output_path": output_file,
+    }
+
+
+# ============================================================================
+# LANGGRAPH WORKFLOW SETUP
+# ============================================================================
+
+
+def should_continue_generation(state: SyntheticAudienceState) -> str:
+    """Determine if generation should continue or move to assembly."""
+    if state.get("generation_complete", False):
+        return "profile_assembler"
+    return "llm_generator"
+
+
+def create_workflow() -> StateGraph:
+    """Create and configure the LangGraph workflow."""
+    logger.info("Creating LangGraph workflow...")
+
+    # Create the graph
+    workflow = StateGraph(SyntheticAudienceState)
+
+    # Add nodes
+    workflow.add_node("load_json", load_json_node)
+    workflow.add_node("distribution_builder", distribution_builder_node)
+    workflow.add_node("persona_processor", persona_processor_node)
+    workflow.add_node("llm_generator", llm_generator_node)
+    workflow.add_node("profile_assembler", profile_assembler_node)
+    workflow.add_node("output_writer", output_writer_node)
+
+    # Define edges
+    workflow.set_entry_point("load_json")
+    workflow.add_edge("load_json", "distribution_builder")
+    workflow.add_edge("distribution_builder", "persona_processor")
+    workflow.add_edge("persona_processor", "llm_generator")
+
+    # Conditional edge for LLM iteration
+    workflow.add_conditional_edges(
+        "llm_generator",
+        should_continue_generation,
+        {
+            "llm_generator": "llm_generator",  # Continue generating
+            "profile_assembler": "profile_assembler",  # Move to assembly
+        },
+    )
+
+    workflow.add_edge("profile_assembler", "output_writer")
+    workflow.add_edge("output_writer", END)
+
+    return workflow
+
+
+# ============================================================================
 # MAIN APPLICATION CLASS
 # ============================================================================
 
@@ -770,94 +1106,63 @@ class SyntheticAudienceGenerator:
 
     def __init__(self):
         """Initialize the generator."""
-        self.llm_generator = LLMContentGenerator()
-        logger.info("Synthetic Audience Generator initialized")
+        self.workflow = create_workflow()
+        # Compile the workflow
+        self.app = self.workflow.compile()
+        logger.info("Synthetic Audience Generator initialized with LangGraph workflow")
 
     def process_request(self, input_file: str, output_file: str) -> Dict[str, Any]:
-        """Process a complete generation request."""
-        logger.info(f"Processing request from {input_file}")
+        """Process a complete generation request using LangGraph workflow."""
+        logger.info(f"Processing request from {input_file} using LangGraph workflow")
 
-        # Load and validate input
-        with open(input_file, "r") as f:
-            raw_data = json.load(f)
-
-        request_data = RequestData(**raw_data)
-        filter_details = request_data.get_filter_details()
-        input_personas = request_data.get_personas()
-
-        logger.info(f"Loaded request for {filter_details.user_req_responses} profiles")
-
-        # Generate demographic schedule
-        demographic_schedule = DistributionCalculator.generate_demographic_schedule(
-            filter_details.user_req_responses,
-            filter_details.gender_proportions,
-            filter_details.age_proportions,
-            filter_details.ethnicity_proportions,
-        )
-
-        # Process personas to extract templates
-        processing_templates = PersonaProcessor.extract_behavioral_templates(
-            input_personas
-        )
-
-        # Generate profiles
-        completed_profiles = []
-
-        logger.info("Starting profile generation...")
-        for i, demographic in enumerate(
-            tqdm(demographic_schedule, desc="Generating profiles")
-        ):
-            try:
-                # Generate behavioral content
-                behavioral_content = self.llm_generator.generate_content(
-                    processing_templates
-                )
-
-                # Create complete profile
-                profile = SyntheticProfile(
-                    age_bucket=demographic.age_bucket,
-                    gender=demographic.gender,
-                    ethnicity=demographic.ethnicity,
-                    about=behavioral_content.about,
-                    goalsAndMotivations=behavioral_content.goalsAndMotivations,
-                    frustrations=behavioral_content.frustrations,
-                    needState=behavioral_content.needState,
-                    occasions=behavioral_content.occasions,
-                    profile_id=i + 1,
-                )
-
-                completed_profiles.append(profile)
-
-            except Exception as e:
-                logger.error(f"Failed to generate profile {i + 1}: {str(e)}")
-                raise
-
-        # Save output
-        output_data = {
-            "synthetic_audience": [profile.dict() for profile in completed_profiles],
-            "generation_metadata": {
-                "total_profiles": len(completed_profiles),
-                "input_file": input_file,
-                "generation_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "distribution_accuracy": self._validate_distribution(
-                    completed_profiles, filter_details
-                ),
-            },
+        # Initial state
+        initial_state = {
+            "input_file": input_file,
+            "output_file": output_file,
         }
 
-        with open(output_file, "w") as f:
-            json.dump(output_data, f, indent=2)
+        # Run the workflow
+        try:
+            final_state = None
+            # Set high recursion limit for large batch processing
+            config = {"recursion_limit": 1000}
+            for step in self.app.stream(initial_state, config=config):
+                node_name = list(step.keys())[0]
+                final_state = step[node_name]
 
-        logger.info(
-            f"Generated {len(completed_profiles)} profiles saved to {output_file}"
-        )
+                # Progress tracking for LLM generation
+                if (
+                    node_name == "llm_generator"
+                    and "current_profile_index" in final_state
+                ):
+                    current = final_state["current_profile_index"]
+                    total = len(final_state.get("demographic_schedule", []))
+                    if total > 0:
+                        progress = (current / total) * 100
+                        print(
+                            f"Generation progress: {progress:.1f}% ({current}/{total})"
+                        )
 
-        return output_data["generation_metadata"]
+                logger.info(f"Completed node: {node_name}")
 
-    def _validate_distribution(
-        self, profiles: List[SyntheticProfile], filter_details: FilterDetails
+            # Check for errors
+            if final_state and final_state.get("processing_errors"):
+                raise Exception(
+                    f"Processing errors: {final_state['processing_errors']}"
+                )
+
+            # Return generation metadata
+            return final_state.get("generation_stats", {})
+
+        except Exception as e:
+            logger.error(f"Workflow execution failed: {str(e)}")
+            raise
+
+    @staticmethod
+    def _validate_distribution_static(
+        profiles: List[SyntheticProfile], filter_details: FilterDetails
     ) -> Dict[str, Any]:
-        """Validate that the generated profiles match the required distribution."""
+        """Static method to validate distribution (for use in nodes)."""
         total_profiles = len(profiles)
 
         # Count actual distributions
