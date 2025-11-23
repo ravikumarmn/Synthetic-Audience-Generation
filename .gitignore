@@ -5,3 +5,4 @@ docs
 venv
 __pycache__
 dataset
+.venv
