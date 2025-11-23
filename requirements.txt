@@ -1,28 +1,28 @@
 # Core LangChain and LangGraph
-langchain>=0.1.0
-langgraph>=0.0.40
+langchain
+langgraph
 
 # LLM Providers
-langchain-google-genai>=1.0.0
-langchain-openai>=0.1.0
-google-generativeai>=0.3.0
-google-auth>=2.0.0
-openai>=1.0.0
+langchain-google-genai
+langchain-openai
+google-generativeai
+google-auth
+openai
 
 # Core Dependencies
-pydantic>=2.0.0
-python-dotenv>=1.0.0
-click>=8.0.0
-tqdm>=4.64.0
+pydantic
+python-dotenv
+click
+tqdm
 
 # Development and Testing
-pytest>=7.0.0
-pytest-asyncio>=0.21.0
-black>=23.0.0
-mypy>=1.0.0
+pytest
+pytest-asyncio
+black
+mypy
 
 # Visualization
-matplotlib>=3.5.0
-networkx>=3.0.0
-ipython>=8.0.0
-graphviz>=0.20.0
+matplotlib
+networkx
+ipython
+graphviz
