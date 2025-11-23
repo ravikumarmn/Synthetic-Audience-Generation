@@ -1,6 +1,8 @@
 .env
 docs
 .windsurf
-persona_input.json
+*.json
 venv
 __pycache__
+dataset
+.venv

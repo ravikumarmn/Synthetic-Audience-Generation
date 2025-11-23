@@ -1,18 +1,27 @@
+# Core LangChain and LangGraph
 langchain
 langgraph
+
+# LLM Providers
 langchain-google-genai
 langchain-openai
 google-generativeai
 google-auth
 openai
+
+# Core Dependencies
 pydantic
 python-dotenv
 click
 tqdm
+
+# Development and Testing
 pytest
 pytest-asyncio
 black
 mypy
+
+# Visualization
 matplotlib
 networkx
 ipython
