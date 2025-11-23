@@ -13,10 +13,12 @@ import re
 import warnings
 import time
 import random
+import asyncio
 from typing import Dict, List, TypedDict, Optional, Tuple, Any
 from dataclasses import dataclass
 from collections import Counter
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 # Core dependencies
 from pydantic import BaseModel, Field, field_validator
@@ -24,10 +26,22 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 import click
 
+# Visualization dependencies
+try:
+    from IPython.display import Image, display
+
+    IPYTHON_AVAILABLE = True
+except ImportError:
+    IPYTHON_AVAILABLE = False
+    logger.warning("IPython not available - graph visualization will be limited")
+
 # LangChain and LangGraph
 from langchain_core.prompts import PromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
+
+# Import prompt
+from prompt import BEHAVIORAL_CONTENT_PROMPT
 
 # Load environment variables
 load_dotenv()
@@ -37,6 +51,11 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# Parallel processing configuration
+DEFAULT_BATCH_SIZE = int(os.getenv("PARALLEL_BATCH_SIZE", "5"))
+DEFAULT_MAX_WORKERS = int(os.getenv("MAX_WORKERS", "3"))
+DEFAULT_CONCURRENT_REQUESTS = int(os.getenv("CONCURRENT_REQUESTS", "3"))
 
 # ============================================================================
 # CORE DATA MODELS
@@ -434,42 +453,7 @@ class DistributionCalculator:
 
 
 class PersonaProcessor:
-    """Processes input personas to extract clean behavioral templates."""
-
-    # Demographic content patterns to remove
-    DEMOGRAPHIC_PATTERNS = [
-        r"\b\d{1,2}[-\s]year[-\s]old\b",
-        r"\bage\s+\d{1,2}\b",
-        r"\b\d{1,2}\s+years?\s+old\b",
-        r"\bmale\b|\bfemale\b",
-        r"\bman\b|\bwoman\b|\bguy\b|\bgirl\b",
-        r"\bhe\b|\bhis\b|\bhim\b|\bshe\b|\bher\b|\bhers\b",
-        r"\bgender\b|\bsex\b",
-        r"\bethnicity\b|\brace\b|\bnationality\b",
-        r"\bwhite\b|\bblack\b|\basian\b|\bhispanic\b|\blatino\b|\blatina\b",
-        r"\bcaucasian\b|\bafrican\b|\bamerican\b|\bindian\b|\bchinese\b|\bjapanese\b",
-        r"\bmumbai\b|\bdelhi\b|\bbangalore\b|\bchennai\b|\bkolkata\b|\bhyderabad\b",
-        r"\bindia\b|\bindian\b|\bhindi\b|\btamil\b|\btelugu\b|\bbengali\b",
-        r"\brupees?\b|\b₹\b|\brs\.?\b|\binr\b",
-        r"\bbandra\b|\bandheri\b|\bpowai\b|\bgoregaon\b|\bthane\b|\bnavi\s+mumbai\b",
-    ]
-
-    @staticmethod
-    def clean_demographic_content(text: str) -> str:
-        """Remove demographic references from text content."""
-        cleaned_text = text
-
-        for pattern in PersonaProcessor.DEMOGRAPHIC_PATTERNS:
-            cleaned_text = re.sub(
-                pattern, "[CONTENT]", cleaned_text, flags=re.IGNORECASE
-            )
-
-        # Clean up multiple spaces and placeholders
-        cleaned_text = re.sub(r"\s+", " ", cleaned_text)
-        cleaned_text = re.sub(r"\[CONTENT\]\s*", "", cleaned_text)
-        cleaned_text = cleaned_text.strip()
-
-        return cleaned_text
+    """Processes input personas to extract behavioral templates."""
 
     @staticmethod
     def extract_behavioral_templates(
@@ -485,37 +469,26 @@ class PersonaProcessor:
         occasions_templates = []
 
         for persona in personas:
-            # Clean and extract about content
-            cleaned_about = PersonaProcessor.clean_demographic_content(persona.about)
-            if len(cleaned_about) > 50:  # Minimum content length
-                about_templates.append(cleaned_about)
+            # Extract content directly - let the prompt handle demographic filtering
+            if persona.about and len(persona.about.strip()) > 10:
+                about_templates.append(persona.about.strip())
 
-            # Clean and extract goals
+            # Extract goals
             for goal in persona.goalsAndMotivations:
-                cleaned_goal = PersonaProcessor.clean_demographic_content(goal)
-                if len(cleaned_goal) > 20:
-                    goals_templates.append(cleaned_goal)
+                if goal and len(goal.strip()) > 5:
+                    goals_templates.append(goal.strip())
 
-            # Clean and extract frustrations
+            # Extract frustrations
             for frustration in persona.frustrations:
-                cleaned_frustration = PersonaProcessor.clean_demographic_content(
-                    frustration
-                )
-                if len(cleaned_frustration) > 20:
-                    frustrations_templates.append(cleaned_frustration)
+                if frustration and len(frustration.strip()) > 5:
+                    frustrations_templates.append(frustration.strip())
 
-            # Clean need state and occasions
-            cleaned_need_state = PersonaProcessor.clean_demographic_content(
-                persona.needState
-            )
-            if len(cleaned_need_state) > 10:
-                need_state_templates.append(cleaned_need_state)
+            # Extract need state and occasions
+            if persona.needState and len(persona.needState.strip()) > 5:
+                need_state_templates.append(persona.needState.strip())
 
-            cleaned_occasions = PersonaProcessor.clean_demographic_content(
-                persona.occasions
-            )
-            if len(cleaned_occasions) > 20:
-                occasions_templates.append(cleaned_occasions)
+            if persona.occasions and len(persona.occasions.strip()) > 5:
+                occasions_templates.append(persona.occasions.strip())
 
         templates = ProcessingTemplates(
             about_templates=list(set(about_templates)),  # Remove duplicates
@@ -557,7 +530,7 @@ class LLMContentGenerator:
 
         self.max_retries = int(os.getenv("MAX_RETRIES", "5"))
 
-        # Define generation prompt template
+        # Use the imported prompt template
         self.prompt_template = PromptTemplate(
             input_variables=[
                 "about_examples",
@@ -566,85 +539,20 @@ class LLMContentGenerator:
                 "need_state_examples",
                 "occasions_examples",
             ],
-            template=self._get_generation_prompt(),
+            template=BEHAVIORAL_CONTENT_PROMPT,
         )
-
-    def _get_generation_prompt(self) -> str:
-        """Get the LLM generation prompt template."""
-        return """You are a behavioral content generator for synthetic audience profiles. 
-
-CRITICAL REQUIREMENTS:
-1. Generate ONLY behavioral content - NO demographic information whatsoever
-2. Use ONLY gender-neutral language - avoid ALL pronouns (he, she, his, her, him, them, they)
-3. Use neutral terms like "this person", "the individual", "someone", or "content creator"
-4. Focus purely on behaviors, motivations, attitudes, and preferences
-5. Return ONLY valid JSON with the exact structure specified
-6. Content must be unique and realistic but avoid copying examples directly
-
-ABSOLUTELY PROHIBITED CONTENT:
-- ANY pronouns: he, she, his, her, him, them, they, their
-- Gender words: male, female, man, woman, guy, girl, person (use "individual" instead)
-- Age references: young, old, 23-year-old, millennial, gen-z, boomer
-- Ethnicity/race references: Indian, Asian, White, Black, Hispanic, Latino
-- Location references: Mumbai, Delhi, specific cities/countries, urban, rural
-- Physical descriptions of any kind
-- Names or specific personal identifiers
-
-LANGUAGE GUIDELINES:
-- Instead of "he creates content" → "the individual creates content"
-- Instead of "she is passionate" → "this content creator is passionate"
-- Instead of "they want to" → "the goal is to"
-- Instead of "his work" → "the work"
-- Use passive voice when needed to avoid pronouns
-
-EXAMPLES FOR INSPIRATION (DO NOT COPY DIRECTLY):
-
-About Examples:
-{about_examples}
-
-Goals Examples:
-{goals_examples}
-
-Frustrations Examples:
-{frustrations_examples}
-
-Need State Examples:
-{need_state_examples}
-
-Occasions Examples:
-{occasions_examples}
-
-Generate unique behavioral content inspired by these examples but with your own variation.
-
-REQUIRED JSON OUTPUT FORMAT:
-{{
-    "about": "A behavioral description focusing on interests, lifestyle, and personality traits using gender-neutral language",
-    "goalsAndMotivations": [
-        "First goal or motivation without pronouns",
-        "Second goal or motivation without pronouns", 
-        "Third goal or motivation without pronouns"
-    ],
-    "frustrations": [
-        "First frustration or challenge without pronouns",
-        "Second frustration or challenge without pronouns",
-        "Third frustration or challenge without pronouns"
-    ],
-    "needState": "Current emotional or motivational state",
-    "occasions": "When and how content engagement happens, using neutral language"
-}}
-
-REMEMBER: NO PRONOUNS OR DEMOGRAPHIC REFERENCES AT ALL. Use "the individual", "this content creator", "someone" instead.
-
-Generate the JSON now:"""
 
     def generate_content(self, templates: ProcessingTemplates) -> BehavioralContent:
         """Generate behavioral content using LLM."""
-        # Prepare examples for prompt
-        about_examples = "\n".join(templates.about_templates[:3])
-        goals_examples = "\n".join(templates.goals_templates[:5])
-        frustrations_examples = "\n".join(templates.frustrations_templates[:5])
-        need_state_examples = "\n".join(templates.need_state_templates[:3])
-        occasions_examples = "\n".join(templates.occasions_templates[:3])
+        # Prepare examples for prompt (configurable limits)
+        max_examples = int(os.getenv("MAX_PROMPT_EXAMPLES", "3"))
+        about_examples = "\n".join(templates.about_templates[:max_examples])
+        goals_examples = "\n".join(templates.goals_templates[: max_examples * 2])
+        frustrations_examples = "\n".join(
+            templates.frustrations_templates[: max_examples * 2]
+        )
+        need_state_examples = "\n".join(templates.need_state_templates[:max_examples])
+        occasions_examples = "\n".join(templates.occasions_templates[:max_examples])
 
         # Generate prompt
         prompt = self.prompt_template.format(
@@ -664,13 +572,12 @@ Generate the JSON now:"""
                 # Parse JSON response
                 content_data = self._parse_llm_response(content_text)
 
-                # Clean and validate content
-                cleaned_content = self._clean_generated_content(content_data)
-                if self._validate_content(cleaned_content):
-                    return BehavioralContent(**cleaned_content)
+                # Basic validation - just check required fields exist
+                if self._validate_basic_structure(content_data):
+                    return BehavioralContent(**content_data)
                 else:
                     logger.warning(
-                        f"Content validation failed on attempt {attempt + 1}"
+                        f"Content structure validation failed on attempt {attempt + 1}"
                     )
 
             except Exception as e:
@@ -694,68 +601,8 @@ Generate the JSON now:"""
                 return json.loads(json_match.group())
             raise ValueError("No valid JSON found in response")
 
-    def _clean_generated_content(self, content_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Clean generated content to remove demographic references."""
-        cleaned_data = content_data.copy()
-
-        # Define replacement patterns
-        replacements = {
-            # Pronouns
-            r"\bhe\b": "the individual",
-            r"\bshe\b": "the individual",
-            r"\bhis\b": "the",
-            r"\bher\b": "the",
-            r"\bhim\b": "the individual",
-            r"\bthey\b": "individuals",
-            r"\bthem\b": "individuals",
-            r"\btheir\b": "the",
-            # Gender terms
-            r"\bman\b": "individual",
-            r"\bwoman\b": "individual",
-            r"\bguy\b": "individual",
-            r"\bgirl\b": "individual",
-            r"\bperson\b": "individual",
-            # Age terms
-            r"\byoung\b": "",
-            r"\bold\b": "experienced",
-            r"\bmillennial\b": "individual",
-            r"\bgen-z\b": "individual",
-            r"\bboomer\b": "individual",
-        }
-
-        # Clean all text fields
-        for field in ["about", "needState", "occasions"]:
-            if field in cleaned_data and isinstance(cleaned_data[field], str):
-                text = cleaned_data[field]
-                for pattern, replacement in replacements.items():
-                    text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
-                # Clean up extra spaces
-                text = re.sub(r"\s+", " ", text).strip()
-                cleaned_data[field] = text
-
-        # Clean list fields
-        for field in ["goalsAndMotivations", "frustrations"]:
-            if field in cleaned_data and isinstance(cleaned_data[field], list):
-                cleaned_list = []
-                for item in cleaned_data[field]:
-                    if isinstance(item, str):
-                        text = item
-                        for pattern, replacement in replacements.items():
-                            text = re.sub(
-                                pattern, replacement, text, flags=re.IGNORECASE
-                            )
-                        # Clean up extra spaces
-                        text = re.sub(r"\s+", " ", text).strip()
-                        cleaned_list.append(text)
-                    else:
-                        cleaned_list.append(item)
-                cleaned_data[field] = cleaned_list
-
-        return cleaned_data
-
-    def _validate_content(self, content_data: Dict[str, Any]) -> bool:
-        """Validate generated content for demographic leakage."""
-        # Check required fields
+    def _validate_basic_structure(self, content_data: Dict[str, Any]) -> bool:
+        """Basic validation to ensure required fields exist."""
         required_fields = [
             "about",
             "goalsAndMotivations",
@@ -763,81 +610,266 @@ Generate the JSON now:"""
             "needState",
             "occasions",
         ]
+
+        # Check all required fields exist
         if not all(field in content_data for field in required_fields):
+            logger.warning(f"Missing required fields. Expected: {required_fields}")
             return False
 
-        # Check for demographic content
-        all_text = json.dumps(content_data).lower()
+        # Check list fields are actually lists
+        list_fields = ["goalsAndMotivations", "frustrations"]
+        for field in list_fields:
+            if (
+                not isinstance(content_data[field], list)
+                or len(content_data[field]) == 0
+            ):
+                logger.warning(f"Field {field} must be a non-empty list")
+                return False
 
-        demographic_keywords = [
-            # Gender pronouns and references
-            "he",
-            "she",
-            "his",
-            "her",
-            "him",
-            "them",
-            "they",
-            "their",
-            "male",
-            "female",
-            "man",
-            "woman",
-            "guy",
-            "girl",
-            "person",
-            # Age references
-            "age",
-            "year",
-            "old",
-            "young",
-            "millennial",
-            "gen-z",
-            "genz",
-            "boomer",
-            # Ethnicity/race
-            "ethnicity",
-            "race",
-            "white",
-            "black",
-            "asian",
-            "hispanic",
-            "latino",
-            "latina",
-            "caucasian",
-            "african",
-            "american",
-            "indian",
-            "chinese",
-            "japanese",
-            # Location references
-            "mumbai",
-            "delhi",
-            "bangalore",
-            "chennai",
-            "kolkata",
-            "hyderabad",
-            "india",
-            "urban",
-            "rural",
-            "city",
-            "town",
-            "village",
-            # Currency/regional
-            "rupee",
-            "₹",
-            "rs.",
-            "inr",
-        ]
-
-        for keyword in demographic_keywords:
-            # Use word boundaries to avoid false positives in compound words
-            pattern = r"\b" + re.escape(keyword) + r"\b"
-            if re.search(pattern, all_text, re.IGNORECASE):
-                logger.warning(f"Demographic content detected: {keyword}")
+        # Check string fields are not empty
+        string_fields = ["about", "needState", "occasions"]
+        for field in string_fields:
+            if (
+                not isinstance(content_data[field], str)
+                or len(content_data[field].strip()) == 0
+            ):
+                logger.warning(f"Field {field} must be a non-empty string")
                 return False
 
         return True
+
+
+class AsyncLLMContentGenerator:
+    """Async version of LLM content generator for parallel processing."""
+
+    def __init__(self):
+        """Initialize the async LLM generator."""
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("GOOGLE_API_KEY not found in environment variables")
+
+        self.llm = ChatGoogleGenerativeAI(
+            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+            temperature=float(os.getenv("GEMINI_TEMPERATURE", "0.7")),
+            max_tokens=int(os.getenv("GEMINI_MAX_TOKENS", "1500")),
+            google_api_key=api_key,
+        )
+
+        self.max_retries = int(os.getenv("MAX_RETRIES", "5"))
+        self.prompt_template = PromptTemplate(
+            input_variables=[
+                "about_examples",
+                "goals_examples",
+                "frustrations_examples",
+                "need_state_examples",
+                "occasions_examples",
+            ],
+            template=BEHAVIORAL_CONTENT_PROMPT,
+        )
+
+    async def generate_content_async(
+        self, templates: ProcessingTemplates, demographic: DemographicAssignment
+    ) -> Tuple[DemographicAssignment, BehavioralContent]:
+        """Generate behavioral content asynchronously."""
+        loop = asyncio.get_event_loop()
+
+        # Run the synchronous LLM call in a thread pool
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            content = await loop.run_in_executor(
+                executor, self._generate_content_sync, templates
+            )
+
+        return demographic, content
+
+    def _generate_content_sync(
+        self, templates: ProcessingTemplates
+    ) -> BehavioralContent:
+        """Synchronous content generation (runs in thread pool)."""
+        # Prepare examples for prompt
+        max_examples = int(os.getenv("MAX_PROMPT_EXAMPLES", "3"))
+        about_examples = "\n".join(templates.about_templates[:max_examples])
+        goals_examples = "\n".join(templates.goals_templates[: max_examples * 2])
+        frustrations_examples = "\n".join(
+            templates.frustrations_templates[: max_examples * 2]
+        )
+        need_state_examples = "\n".join(templates.need_state_templates[:max_examples])
+        occasions_examples = "\n".join(templates.occasions_templates[:max_examples])
+
+        # Generate prompt
+        prompt = self.prompt_template.format(
+            about_examples=about_examples,
+            goals_examples=goals_examples,
+            frustrations_examples=frustrations_examples,
+            need_state_examples=need_state_examples,
+            occasions_examples=occasions_examples,
+        )
+
+        # Generate with retry logic
+        for attempt in range(self.max_retries):
+            try:
+                response = self.llm.invoke(prompt)
+                content_text = response.content
+
+                # Parse JSON response
+                content_data = self._parse_llm_response(content_text)
+
+                # Basic validation
+                if self._validate_basic_structure(content_data):
+                    return BehavioralContent(**content_data)
+                else:
+                    logger.warning(
+                        f"Content structure validation failed on attempt {attempt + 1}"
+                    )
+
+            except Exception as e:
+                logger.warning(f"Generation attempt {attempt + 1} failed: {str(e)}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(2**attempt + random.uniform(0, 1))
+
+        raise Exception(
+            f"Failed to generate valid content after {self.max_retries} attempts"
+        )
+
+    def _parse_llm_response(self, response_text: str) -> Dict[str, Any]:
+        """Parse LLM response to extract JSON."""
+        try:
+            return json.loads(response_text)
+        except json.JSONDecodeError:
+            json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
+            raise ValueError("No valid JSON found in response")
+
+    def _validate_basic_structure(self, content_data: Dict[str, Any]) -> bool:
+        """Basic validation to ensure required fields exist."""
+        required_fields = [
+            "about",
+            "goalsAndMotivations",
+            "frustrations",
+            "needState",
+            "occasions",
+        ]
+
+        if not all(field in content_data for field in required_fields):
+            return False
+
+        list_fields = ["goalsAndMotivations", "frustrations"]
+        for field in list_fields:
+            if (
+                not isinstance(content_data[field], list)
+                or len(content_data[field]) == 0
+            ):
+                return False
+
+        string_fields = ["about", "needState", "occasions"]
+        for field in string_fields:
+            if (
+                not isinstance(content_data[field], str)
+                or len(content_data[field].strip()) == 0
+            ):
+                return False
+
+        return True
+
+
+# ============================================================================
+# PARALLEL BATCH PROCESSOR
+# ============================================================================
+
+
+class ParallelBatchProcessor:
+    """Handles parallel batch processing of profile generation."""
+
+    def __init__(
+        self,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        max_workers: int = DEFAULT_MAX_WORKERS,
+    ):
+        """Initialize the batch processor."""
+        self.batch_size = batch_size
+        self.max_workers = max_workers
+        self.async_generator = AsyncLLMContentGenerator()
+
+    async def process_batch_async(
+        self,
+        demographic_batch: List[DemographicAssignment],
+        templates: ProcessingTemplates,
+    ) -> List[SyntheticProfile]:
+        """Process a batch of demographics in parallel."""
+        logger.info(
+            f"Processing batch of {len(demographic_batch)} profiles in parallel"
+        )
+
+        # Create semaphore to limit concurrent requests
+        semaphore = asyncio.Semaphore(DEFAULT_CONCURRENT_REQUESTS)
+
+        async def generate_with_semaphore(demographic: DemographicAssignment):
+            async with semaphore:
+                return await self.async_generator.generate_content_async(
+                    templates, demographic
+                )
+
+        # Execute all generations in parallel
+        tasks = [generate_with_semaphore(demo) for demo in demographic_batch]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Process results and create profiles
+        profiles = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"Failed to generate profile {i+1}: {str(result)}")
+                continue
+
+            demographic, behavioral_content = result
+            profile = SyntheticProfile(
+                age_bucket=demographic.age_bucket,
+                gender=demographic.gender,
+                ethnicity=demographic.ethnicity,
+                about=behavioral_content.about,
+                goalsAndMotivations=behavioral_content.goalsAndMotivations,
+                frustrations=behavioral_content.frustrations,
+                needState=behavioral_content.needState,
+                occasions=behavioral_content.occasions,
+                profile_id=demographic.profile_index + 1,
+            )
+            profiles.append(profile)
+
+        logger.info(f"Successfully generated {len(profiles)} profiles in batch")
+        return profiles
+
+    def process_all_batches(
+        self,
+        demographic_schedule: List[DemographicAssignment],
+        templates: ProcessingTemplates,
+    ) -> List[SyntheticProfile]:
+        """Process all demographics in batches."""
+        logger.info(
+            f"Processing {len(demographic_schedule)} profiles in batches of {self.batch_size}"
+        )
+
+        all_profiles = []
+
+        # Split into batches
+        for i in range(0, len(demographic_schedule), self.batch_size):
+            batch = demographic_schedule[i : i + self.batch_size]
+            batch_num = (i // self.batch_size) + 1
+            total_batches = (
+                len(demographic_schedule) + self.batch_size - 1
+            ) // self.batch_size
+
+            logger.info(f"Processing batch {batch_num}/{total_batches}")
+
+            # Run async batch processing
+            batch_profiles = asyncio.run(self.process_batch_async(batch, templates))
+            all_profiles.extend(batch_profiles)
+
+            # Progress update
+            progress = len(all_profiles) / len(demographic_schedule) * 100
+            logger.info(
+                f"Overall progress: {progress:.1f}% ({len(all_profiles)}/{len(demographic_schedule)})"
+            )
+
+        return all_profiles
 
 
 # ============================================================================
@@ -978,6 +1010,51 @@ def llm_generator_node(state: SyntheticAudienceState) -> SyntheticAudienceState:
         }
 
 
+def parallel_llm_generator_node(
+    state: SyntheticAudienceState,
+) -> SyntheticAudienceState:
+    """Generate all behavioral content in parallel batches."""
+    demographic_schedule = state["demographic_schedule"]
+    processing_templates = state["processing_templates"]
+
+    logger.info(
+        f"Starting parallel generation for {len(demographic_schedule)} profiles"
+    )
+
+    try:
+        # Initialize parallel batch processor
+        batch_size = int(os.getenv("PARALLEL_BATCH_SIZE", "5"))
+        processor = ParallelBatchProcessor(batch_size=batch_size)
+
+        # Process all profiles in parallel batches
+        completed_profiles = processor.process_all_batches(
+            demographic_schedule, processing_templates
+        )
+
+        logger.info(
+            f"Parallel generation completed: {len(completed_profiles)} profiles generated"
+        )
+
+        return {
+            **state,
+            "completed_profiles": completed_profiles,
+            "generation_complete": True,
+        }
+
+    except Exception as e:
+        error_msg = f"Parallel generation failed: {str(e)}"
+        logger.error(error_msg)
+
+        processing_errors = state.get("processing_errors", [])
+        processing_errors.append(error_msg)
+
+        return {
+            **state,
+            "processing_errors": processing_errors,
+            "generation_complete": True,
+        }
+
+
 def profile_assembler_node(state: SyntheticAudienceState) -> SyntheticAudienceState:
     """Assemble and validate final audience profiles."""
     logger.info("Assembling and validating final profiles...")
@@ -1096,6 +1173,33 @@ def create_workflow() -> StateGraph:
     return workflow
 
 
+def create_parallel_workflow() -> StateGraph:
+    """Create and configure the parallel LangGraph workflow."""
+    logger.info("Creating parallel LangGraph workflow...")
+
+    # Create the graph
+    workflow = StateGraph(SyntheticAudienceState)
+
+    # Add nodes
+    workflow.add_node("load_json", load_json_node)
+    workflow.add_node("distribution_builder", distribution_builder_node)
+    workflow.add_node("persona_processor", persona_processor_node)
+    workflow.add_node("parallel_llm_generator", parallel_llm_generator_node)
+    workflow.add_node("profile_assembler", profile_assembler_node)
+    workflow.add_node("output_writer", output_writer_node)
+
+    # Define edges - much simpler without the loop
+    workflow.set_entry_point("load_json")
+    workflow.add_edge("load_json", "distribution_builder")
+    workflow.add_edge("distribution_builder", "persona_processor")
+    workflow.add_edge("persona_processor", "parallel_llm_generator")
+    workflow.add_edge("parallel_llm_generator", "profile_assembler")
+    workflow.add_edge("profile_assembler", "output_writer")
+    workflow.add_edge("output_writer", END)
+
+    return workflow
+
+
 # ============================================================================
 # MAIN APPLICATION CLASS
 # ============================================================================
@@ -1104,12 +1208,23 @@ def create_workflow() -> StateGraph:
 class SyntheticAudienceGenerator:
     """Main application class orchestrating the generation process."""
 
-    def __init__(self):
+    def __init__(self, use_parallel: bool = True):
         """Initialize the generator."""
-        self.workflow = create_workflow()
+        self.use_parallel = use_parallel
+
+        if use_parallel:
+            self.workflow = create_parallel_workflow()
+            logger.info(
+                "Synthetic Audience Generator initialized with PARALLEL LangGraph workflow"
+            )
+        else:
+            self.workflow = create_workflow()
+            logger.info(
+                "Synthetic Audience Generator initialized with sequential LangGraph workflow"
+            )
+
         # Compile the workflow
         self.app = self.workflow.compile()
-        logger.info("Synthetic Audience Generator initialized with LangGraph workflow")
 
     def process_request(self, input_file: str, output_file: str) -> Dict[str, Any]:
         """Process a complete generation request using LangGraph workflow."""
@@ -1211,6 +1326,57 @@ class SyntheticAudienceGenerator:
             },
         }
 
+    def visualize_workflow(self, save_path: str = None, display_image: bool = True):
+        """
+        Visualize the LangGraph workflow using Mermaid diagram.
+
+        Args:
+            save_path: Optional path to save the PNG image
+            display_image: Whether to display the image (requires IPython)
+
+        Returns:
+            Image object if successful, None otherwise
+        """
+        try:
+            logger.info("Generating workflow visualization...")
+
+            # Generate Mermaid PNG
+            mermaid_png = self.app.get_graph().draw_mermaid_png()
+
+            if save_path:
+                # Save to file
+                with open(save_path, "wb") as f:
+                    f.write(mermaid_png)
+                logger.info(f"Workflow diagram saved to {save_path}")
+
+            if display_image and IPYTHON_AVAILABLE:
+                # Display in Jupyter/IPython environment
+                img = Image(mermaid_png)
+                display(img)
+                return img
+            elif display_image:
+                logger.warning("IPython not available - cannot display image inline")
+                logger.info("Consider saving to file using save_path parameter")
+
+            return mermaid_png
+
+        except Exception as e:
+            logger.error(f"Failed to generate workflow visualization: {str(e)}")
+            return None
+
+    def get_workflow_mermaid_code(self) -> str:
+        """
+        Get the Mermaid code representation of the workflow.
+
+        Returns:
+            Mermaid diagram code as string
+        """
+        try:
+            return self.app.get_graph().draw_mermaid()
+        except Exception as e:
+            logger.error(f"Failed to generate Mermaid code: {str(e)}")
+            return ""
+
 
 # ============================================================================
 # CLI INTERFACE
@@ -1218,12 +1384,46 @@ class SyntheticAudienceGenerator:
 
 
 @click.command()
-@click.option("--input", "-i", required=True, help="Input JSON file path")
-@click.option("--output", "-o", required=True, help="Output JSON file path")
+@click.option("--input", "-i", help="Input JSON file path")
+@click.option("--output", "-o", help="Output JSON file path")
 @click.option(
     "--validate-env", is_flag=True, help="Run environment validation before processing"
 )
-def main(input: str, output: str, validate_env: bool):
+@click.option(
+    "--visualize", is_flag=True, help="Generate and display workflow visualization"
+)
+@click.option("--save-graph", help="Save workflow graph to specified PNG file path")
+@click.option(
+    "--show-mermaid", is_flag=True, help="Print Mermaid diagram code to console"
+)
+@click.option(
+    "--parallel/--sequential",
+    default=True,
+    help="Use parallel processing (default) or sequential processing",
+)
+@click.option(
+    "--batch-size",
+    type=int,
+    default=DEFAULT_BATCH_SIZE,
+    help=f"Batch size for parallel processing (default: {DEFAULT_BATCH_SIZE})",
+)
+@click.option(
+    "--max-workers",
+    type=int,
+    default=DEFAULT_MAX_WORKERS,
+    help=f"Maximum worker threads (default: {DEFAULT_MAX_WORKERS})",
+)
+def main(
+    input: str,
+    output: str,
+    validate_env: bool,
+    visualize: bool,
+    save_graph: str,
+    show_mermaid: bool,
+    parallel: bool,
+    batch_size: int,
+    max_workers: int,
+):
     """Synthetic Audience Generator MVP - Generate synthetic audience profiles."""
 
     if validate_env:
@@ -1231,7 +1431,54 @@ def main(input: str, output: str, validate_env: bool):
         os.system("python validate_environment.py")
 
     try:
-        generator = SyntheticAudienceGenerator()
+        # Set environment variables for parallel processing
+        if parallel:
+            os.environ["PARALLEL_BATCH_SIZE"] = str(batch_size)
+            os.environ["MAX_WORKERS"] = str(max_workers)
+            logger.info(
+                f"Parallel processing enabled: batch_size={batch_size}, max_workers={max_workers}"
+            )
+        else:
+            logger.info("Sequential processing enabled")
+
+        generator = SyntheticAudienceGenerator(use_parallel=parallel)
+
+        # Handle visualization options
+        if visualize or save_graph or show_mermaid:
+            logger.info("Processing visualization requests...")
+
+            if show_mermaid:
+                print("\n" + "=" * 60)
+                print("LANGGRAPH WORKFLOW MERMAID CODE")
+                print("=" * 60)
+                mermaid_code = generator.get_workflow_mermaid_code()
+                if mermaid_code:
+                    print(mermaid_code)
+                else:
+                    print("Failed to generate Mermaid code")
+                print("=" * 60)
+
+            if visualize or save_graph:
+                save_path = save_graph if save_graph else None
+                result = generator.visualize_workflow(
+                    save_path=save_path, display_image=visualize
+                )
+                if result is None:
+                    print("❌ Failed to generate workflow visualization")
+                elif save_path:
+                    print(f"✅ Workflow diagram saved to: {save_path}")
+
+            # If only visualization was requested, exit here
+            if not input or not output:
+                print("\n✅ Visualization completed")
+                return
+
+        # Validate required arguments for processing
+        if not input or not output:
+            print("❌ Error: --input and --output are required for processing")
+            print("Use --help for more information")
+            exit(1)
+
         metadata = generator.process_request(input, output)
 
         print("\n" + "=" * 60)

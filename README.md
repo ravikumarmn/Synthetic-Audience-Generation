@@ -15,12 +15,23 @@ cp .env.example .env
 ```
 
 ### 2. Run Generation
+
+#### Parallel Processing (Recommended - Much Faster!)
 ```bash
-# Generate 5 profiles (small demo)
+# Generate 5 profiles with parallel processing (default)
 python synthetic_audience_mvp.py -i dataset/small_demo_input.json -o results/output.json
 
-# Generate 250 profiles (full dataset)
-python synthetic_audience_mvp.py -i dataset/persona_input.json -o results/output.json
+# Generate 250 profiles with custom parallel settings
+python synthetic_audience_mvp.py -i dataset/persona_input.json -o results/output.json --batch-size 10 --max-workers 5
+
+# Generate with specific parallel configuration
+python synthetic_audience_mvp.py -i dataset/small_demo_input.json -o results/output.json --parallel --batch-size 3 --max-workers 2
+```
+
+#### Sequential Processing (Slower)
+```bash
+# Generate profiles one at a time (slower but more stable)
+python synthetic_audience_mvp.py -i dataset/small_demo_input.json -o results/output.json --sequential
 ```
 
 ### 3. Check Results
@@ -54,6 +65,7 @@ cat results/output.json
 - ✅ **High-Quality Content** - AI-generated behavioral profiles
 - ✅ **Scalable** - Handles 5 to 250+ profiles
 - ✅ **Production Ready** - Error handling and validation
+- ✅ **Workflow Visualization** - LangGraph Mermaid diagrams
 
 ## 📊 Output Format
 
@@ -77,6 +89,65 @@ cat results/output.json
     "distribution_accuracy": { /* Validation results */ }
   }
 }
+```
+
+## 📊 Workflow Visualization
+
+Visualize the LangGraph workflow using Mermaid diagrams:
+
+```bash
+# View Mermaid code
+python synthetic_audience_mvp.py --show-mermaid
+
+# Save diagram as PNG
+python synthetic_audience_mvp.py --save-graph workflow.png
+
+# Display in Jupyter
+python synthetic_audience_mvp.py --visualize
+```
+
+See [WORKFLOW_VISUALIZATION.md](WORKFLOW_VISUALIZATION.md) for detailed documentation.
+
+## ⚡ Performance & Parallel Processing
+
+### Speed Comparison
+- **Sequential**: ~7 seconds per profile (one at a time)
+- **Parallel**: ~2-3 seconds per profile (batch processing)
+- **Speedup**: 2-3x faster with parallel processing
+
+### Parallel Processing Configuration
+
+#### Environment Variables
+```bash
+# Set in .env file or environment
+PARALLEL_BATCH_SIZE=5          # Profiles per batch
+MAX_WORKERS=3                  # Worker threads
+CONCURRENT_REQUESTS=3          # Concurrent API calls
+```
+
+#### CLI Options
+```bash
+# Basic parallel processing
+python synthetic_audience_mvp.py -i input.json -o output.json --parallel
+
+# Custom batch configuration
+python synthetic_audience_mvp.py -i input.json -o output.json --batch-size 10 --max-workers 5
+
+# Sequential processing (fallback)
+python synthetic_audience_mvp.py -i input.json -o output.json --sequential
+```
+
+### Performance Tips
+- **Small datasets (< 10 profiles)**: Sequential might be faster due to overhead
+- **Medium datasets (10-100 profiles)**: Use `--batch-size 5 --max-workers 3`
+- **Large datasets (100+ profiles)**: Use `--batch-size 10 --max-workers 5`
+- **API rate limits**: Reduce `CONCURRENT_REQUESTS` if you hit limits
+- **Memory constraints**: Reduce `BATCH_SIZE` if you encounter memory issues
+
+### Example Performance Test
+```bash
+# Run the performance comparison
+python example_parallel_usage.py
 ```
 
 ## 🔧 API Requirements

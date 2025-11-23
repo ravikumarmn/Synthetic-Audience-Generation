@@ -11,3 +11,7 @@ pytest
 pytest-asyncio
 black
 mypy
+matplotlib
+networkx
+ipython
+graphviz
