@@ -38,6 +38,7 @@ except ImportError:
 # LangChain and LangGraph
 from langchain_core.prompts import PromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import AzureChatOpenAI
 from langgraph.graph import StateGraph, END
 
 # Import prompt
@@ -56,6 +57,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_BATCH_SIZE = int(os.getenv("PARALLEL_BATCH_SIZE", "5"))
 DEFAULT_MAX_WORKERS = int(os.getenv("MAX_WORKERS", "3"))
 DEFAULT_CONCURRENT_REQUESTS = int(os.getenv("CONCURRENT_REQUESTS", "3"))
+
+# LLM Provider configuration
+DEFAULT_LLM_PROVIDER = os.getenv("LLM_PROVIDER", "google")  # "google" or "azure"
 
 # ============================================================================
 # CORE DATA MODELS
@@ -515,18 +519,43 @@ class PersonaProcessor:
 class LLMContentGenerator:
     """Handles LLM integration for behavioral content generation."""
 
-    def __init__(self):
+    def __init__(self, provider: str = None):
         """Initialize the LLM with configuration."""
-        api_key = os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            raise ValueError("GOOGLE_API_KEY not found in environment variables")
+        self.provider = provider or os.getenv("LLM_PROVIDER", "google")
 
-        self.llm = ChatGoogleGenerativeAI(
-            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-            temperature=float(os.getenv("GEMINI_TEMPERATURE", "0.7")),
-            max_tokens=int(os.getenv("GEMINI_MAX_TOKENS", "1500")),
-            google_api_key=api_key,
-        )
+        if self.provider == "azure":
+            # Azure OpenAI configuration
+            azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+            api_key = os.getenv("AZURE_OPENAI_API_KEY")
+            deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+            api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
+
+            if not all([azure_endpoint, api_key, deployment_name]):
+                raise ValueError(
+                    "Azure OpenAI configuration missing. Required: "
+                    "AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME"
+                )
+
+            self.llm = AzureChatOpenAI(
+                azure_endpoint=azure_endpoint,
+                api_key=api_key,
+                azure_deployment=deployment_name,
+                api_version=api_version,
+                temperature=float(os.getenv("AZURE_OPENAI_TEMPERATURE", "0.7")),
+                max_tokens=int(os.getenv("AZURE_OPENAI_MAX_TOKENS", "1500")),
+            )
+        else:
+            # Google Gemini configuration (default)
+            api_key = os.getenv("GOOGLE_API_KEY")
+            if not api_key:
+                raise ValueError("GOOGLE_API_KEY not found in environment variables")
+
+            self.llm = ChatGoogleGenerativeAI(
+                model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+                temperature=float(os.getenv("GEMINI_TEMPERATURE", "0.7")),
+                max_tokens=int(os.getenv("GEMINI_MAX_TOKENS", "1500")),
+                google_api_key=api_key,
+            )
 
         self.max_retries = int(os.getenv("MAX_RETRIES", "5"))
 
@@ -639,21 +668,183 @@ class LLMContentGenerator:
         return True
 
 
+class AzureOpenAIContentGenerator:
+    """Handles Azure OpenAI integration for behavioral content generation."""
+
+    def __init__(self):
+        """Initialize the Azure OpenAI LLM with configuration."""
+        # Azure OpenAI configuration
+        azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+        api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+        api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
+
+        if not all([azure_endpoint, api_key, deployment_name]):
+            raise ValueError(
+                "Azure OpenAI configuration missing. Required: "
+                "AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME"
+            )
+
+        self.llm = AzureChatOpenAI(
+            azure_endpoint=azure_endpoint,
+            api_key=api_key,
+            azure_deployment=deployment_name,
+            api_version=api_version,
+            temperature=float(os.getenv("AZURE_OPENAI_TEMPERATURE", "0.7")),
+            max_tokens=int(os.getenv("AZURE_OPENAI_MAX_TOKENS", "1500")),
+        )
+
+        self.max_retries = int(os.getenv("MAX_RETRIES", "5"))
+
+        # Use the imported prompt template
+        self.prompt_template = PromptTemplate(
+            input_variables=[
+                "about_examples",
+                "goals_examples",
+                "frustrations_examples",
+                "need_state_examples",
+                "occasions_examples",
+            ],
+            template=BEHAVIORAL_CONTENT_PROMPT,
+        )
+
+    def generate_content(self, templates: ProcessingTemplates) -> BehavioralContent:
+        """Generate behavioral content using Azure OpenAI."""
+        # Prepare examples for prompt (configurable limits)
+        max_examples = int(os.getenv("MAX_PROMPT_EXAMPLES", "3"))
+        about_examples = "\n".join(templates.about_templates[:max_examples])
+        goals_examples = "\n".join(templates.goals_templates[: max_examples * 2])
+        frustrations_examples = "\n".join(
+            templates.frustrations_templates[: max_examples * 2]
+        )
+        need_state_examples = "\n".join(templates.need_state_templates[:max_examples])
+        occasions_examples = "\n".join(templates.occasions_templates[:max_examples])
+
+        # Generate prompt
+        prompt = self.prompt_template.format(
+            about_examples=about_examples,
+            goals_examples=goals_examples,
+            frustrations_examples=frustrations_examples,
+            need_state_examples=need_state_examples,
+            occasions_examples=occasions_examples,
+        )
+
+        # Generate with retry logic
+        for attempt in range(self.max_retries):
+            try:
+                response = self.llm.invoke(prompt)
+                content_text = response.content
+
+                # Parse JSON response
+                content_data = self._parse_llm_response(content_text)
+
+                # Basic validation - just check required fields exist
+                if self._validate_basic_structure(content_data):
+                    return BehavioralContent(**content_data)
+                else:
+                    logger.warning(
+                        f"Content structure validation failed on attempt {attempt + 1}"
+                    )
+
+            except Exception as e:
+                logger.warning(f"Generation attempt {attempt + 1} failed: {str(e)}")
+                if attempt < self.max_retries - 1:
+                    time.sleep(2**attempt + random.uniform(0, 1))
+
+        raise Exception(
+            f"Failed to generate valid content after {self.max_retries} attempts"
+        )
+
+    def _parse_llm_response(self, response_text: str) -> Dict[str, Any]:
+        """Parse LLM response to extract JSON."""
+        try:
+            # Try direct JSON parsing
+            return json.loads(response_text)
+        except json.JSONDecodeError:
+            # Try to extract JSON from response
+            json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
+            raise ValueError("No valid JSON found in response")
+
+    def _validate_basic_structure(self, content_data: Dict[str, Any]) -> bool:
+        """Basic validation to ensure required fields exist."""
+        required_fields = [
+            "about",
+            "goalsAndMotivations",
+            "frustrations",
+            "needState",
+            "occasions",
+        ]
+
+        # Check all required fields exist
+        if not all(field in content_data for field in required_fields):
+            logger.warning(f"Missing required fields. Expected: {required_fields}")
+            return False
+
+        # Check list fields are actually lists
+        list_fields = ["goalsAndMotivations", "frustrations"]
+        for field in list_fields:
+            if (
+                not isinstance(content_data[field], list)
+                or len(content_data[field]) == 0
+            ):
+                logger.warning(f"Field {field} must be a non-empty list")
+                return False
+
+        # Check string fields are not empty
+        string_fields = ["about", "needState", "occasions"]
+        for field in string_fields:
+            if (
+                not isinstance(content_data[field], str)
+                or len(content_data[field].strip()) == 0
+            ):
+                logger.warning(f"Field {field} must be a non-empty string")
+                return False
+
+        return True
+
+
 class AsyncLLMContentGenerator:
     """Async version of LLM content generator for parallel processing."""
 
-    def __init__(self):
+    def __init__(self, provider: str = None):
         """Initialize the async LLM generator."""
-        api_key = os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            raise ValueError("GOOGLE_API_KEY not found in environment variables")
+        self.provider = provider or os.getenv("LLM_PROVIDER", "google")
 
-        self.llm = ChatGoogleGenerativeAI(
-            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-            temperature=float(os.getenv("GEMINI_TEMPERATURE", "0.7")),
-            max_tokens=int(os.getenv("GEMINI_MAX_TOKENS", "1500")),
-            google_api_key=api_key,
-        )
+        if self.provider == "azure":
+            # Azure OpenAI configuration
+            azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+            api_key = os.getenv("AZURE_OPENAI_API_KEY")
+            deployment_name = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME")
+            api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
+
+            if not all([azure_endpoint, api_key, deployment_name]):
+                raise ValueError(
+                    "Azure OpenAI configuration missing. Required: "
+                    "AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT_NAME"
+                )
+
+            self.llm = AzureChatOpenAI(
+                azure_endpoint=azure_endpoint,
+                api_key=api_key,
+                azure_deployment=deployment_name,
+                api_version=api_version,
+                temperature=float(os.getenv("AZURE_OPENAI_TEMPERATURE", "0.7")),
+                max_tokens=int(os.getenv("AZURE_OPENAI_MAX_TOKENS", "1500")),
+            )
+        else:
+            # Google Gemini configuration (default)
+            api_key = os.getenv("GOOGLE_API_KEY")
+            if not api_key:
+                raise ValueError("GOOGLE_API_KEY not found in environment variables")
+
+            self.llm = ChatGoogleGenerativeAI(
+                model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+                temperature=float(os.getenv("GEMINI_TEMPERATURE", "0.7")),
+                max_tokens=int(os.getenv("GEMINI_MAX_TOKENS", "1500")),
+                google_api_key=api_key,
+            )
 
         self.max_retries = int(os.getenv("MAX_RETRIES", "5"))
         self.prompt_template = PromptTemplate(
@@ -784,11 +975,13 @@ class ParallelBatchProcessor:
         self,
         batch_size: int = DEFAULT_BATCH_SIZE,
         max_workers: int = DEFAULT_MAX_WORKERS,
+        provider: str = None,
     ):
         """Initialize the batch processor."""
         self.batch_size = batch_size
         self.max_workers = max_workers
-        self.async_generator = AsyncLLMContentGenerator()
+        self.provider = provider or os.getenv("LLM_PROVIDER", "google")
+        self.async_generator = AsyncLLMContentGenerator(provider=self.provider)
 
     async def process_batch_async(
         self,
@@ -963,7 +1156,8 @@ def llm_generator_node(state: SyntheticAudienceState) -> SyntheticAudienceState:
 
     # Initialize LLM generator if not exists
     if not hasattr(state, "_llm_generator"):
-        state["_llm_generator"] = LLMContentGenerator()
+        provider = os.getenv("LLM_PROVIDER", "google")
+        state["_llm_generator"] = LLMContentGenerator(provider=provider)
 
     try:
         # Generate behavioral content
@@ -1024,7 +1218,8 @@ def parallel_llm_generator_node(
     try:
         # Initialize parallel batch processor
         batch_size = int(os.getenv("PARALLEL_BATCH_SIZE", "5"))
-        processor = ParallelBatchProcessor(batch_size=batch_size)
+        provider = os.getenv("LLM_PROVIDER", "google")
+        processor = ParallelBatchProcessor(batch_size=batch_size, provider=provider)
 
         # Process all profiles in parallel batches
         completed_profiles = processor.process_all_batches(
@@ -1413,6 +1608,12 @@ class SyntheticAudienceGenerator:
     default=DEFAULT_MAX_WORKERS,
     help=f"Maximum worker threads (default: {DEFAULT_MAX_WORKERS})",
 )
+@click.option(
+    "--provider",
+    type=click.Choice(["google", "azure"]),
+    default=DEFAULT_LLM_PROVIDER,
+    help=f"LLM provider to use (default: {DEFAULT_LLM_PROVIDER})",
+)
 def main(
     input: str,
     output: str,
@@ -1423,6 +1624,7 @@ def main(
     parallel: bool,
     batch_size: int,
     max_workers: int,
+    provider: str,
 ):
     """Synthetic Audience Generator MVP - Generate synthetic audience profiles."""
 
@@ -1431,15 +1633,17 @@ def main(
         os.system("python validate_environment.py")
 
     try:
-        # Set environment variables for parallel processing
+        # Set environment variables for processing configuration
+        os.environ["LLM_PROVIDER"] = provider
+
         if parallel:
             os.environ["PARALLEL_BATCH_SIZE"] = str(batch_size)
             os.environ["MAX_WORKERS"] = str(max_workers)
             logger.info(
-                f"Parallel processing enabled: batch_size={batch_size}, max_workers={max_workers}"
+                f"Parallel processing enabled: provider={provider}, batch_size={batch_size}, max_workers={max_workers}"
             )
         else:
-            logger.info("Sequential processing enabled")
+            logger.info(f"Sequential processing enabled: provider={provider}")
 
         generator = SyntheticAudienceGenerator(use_parallel=parallel)
 

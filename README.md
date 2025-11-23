@@ -9,23 +9,31 @@ Generate synthetic audience profiles with **exact demographic distribution match
 # Install dependencies
 pip install -r requirements.txt
 
-# Configure API key
+# Configure API key (choose one)
+# For Google Gemini:
 cp .env.example .env
 # Edit .env and add your GOOGLE_API_KEY
+
+# For Azure OpenAI:
+cp .env.azure .env
+# Edit .env and add your Azure OpenAI configuration
 ```
 
 ### 2. Run Generation
 
 #### Parallel Processing (Recommended - Much Faster!)
 ```bash
-# Generate 5 profiles with parallel processing (default)
+# Generate with Google Gemini (default)
 python synthetic_audience_mvp.py -i dataset/small_demo_input.json -o results/output.json
 
+# Generate with Azure OpenAI
+python synthetic_audience_mvp.py -i dataset/small_demo_input.json -o results/output.json --provider azure
+
 # Generate 250 profiles with custom parallel settings
-python synthetic_audience_mvp.py -i dataset/persona_input.json -o results/output.json --batch-size 10 --max-workers 5
+python synthetic_audience_mvp.py -i dataset/persona_input.json -o results/output.json --provider azure --batch-size 10 --max-workers 5
 
 # Generate with specific parallel configuration
-python synthetic_audience_mvp.py -i dataset/small_demo_input.json -o results/output.json --parallel --batch-size 3 --max-workers 2
+python synthetic_audience_mvp.py -i dataset/small_demo_input.json -o results/output.json --provider azure --parallel --batch-size 3 --max-workers 2
 ```
 
 #### Sequential Processing (Slower)
@@ -152,6 +160,29 @@ python example_parallel_usage.py
 
 ## 🔧 API Requirements
 
+### Google Gemini (Default)
 - **Google Gemini API Key** required
 - **Free Tier**: 250 requests/day
 - **Recommendation**: Use `gemini-1.5-flash` for higher quotas
+
+### Azure OpenAI (Recommended for Production)
+- **Azure OpenAI Resource** required
+- **Higher Rate Limits**: Typically 10,000+ requests/minute
+- **Better Reliability**: Enterprise-grade SLA
+- **Configuration Required**:
+  ```bash
+  AZURE_OPENAI_ENDPOINT=https://your-resource-name.openai.azure.com/
+  AZURE_OPENAI_API_KEY=your_api_key
+  AZURE_OPENAI_DEPLOYMENT_NAME=your_deployment_name
+  AZURE_OPENAI_API_VERSION=2024-02-15-preview
+  ```
+
+### Provider Comparison
+| Feature | Google Gemini | Azure OpenAI |
+|---------|---------------|--------------|
+| **Setup** | Simple API key | Resource + deployment |
+| **Free Tier** | 250 requests/day | Pay-per-use |
+| **Rate Limits** | Lower | Much higher |
+| **Reliability** | Good | Enterprise-grade |
+| **Models** | Gemini 2.5 Flash | GPT-3.5, GPT-4 |
+| **Best For** | Development/Testing | Production |

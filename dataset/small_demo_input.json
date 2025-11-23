@@ -1,0 +1,104 @@
+{
+    "request": [
+        {
+            "filter_details": {
+                "user_req_responses": 5,
+                "age_filter": {
+                    "lower_bound": 18,
+                    "upper_bound": 79
+                },
+                "age_proportions": {
+                    "GenZ": 40,
+                    "Young Millennials": 40,
+                    "Old Millennials": 10,
+                    "GenX": 5,
+                    "Boomer": 5
+                },
+                "gender_filter": [
+                    "Female",
+                    "Male"
+                ],
+                "age_filter_complete": true,
+                "gender_proportions": {
+                    "Female": 80,
+                    "Male": 20
+                },
+                "ethnicity_filter_complete": true,
+                "ethnicity_proportions": {
+                    "White/Caucasian": 59,
+                    "Asian": 6,
+                    "Black or African-American": 15,
+                    "Native Hawaiian or Other Pacific Islander": 1,
+                    "Hispanics": 19
+                },
+                "ethnicity_filter": [
+                    "White/Caucasian",
+                    "Asian",
+                    "Black or African-American",
+                    "Native Hawaiian or Other Pacific Islander",
+                    "Hispanics"
+                ]
+            },
+            "personas": [
+                {
+                    "id": 152,
+                    "generatedTitle": "Mr. YouTube: Urban YouTuber on the Rise",
+                    "personaName": "Ritvik Kapoor",
+                    "age": 23,
+                    "location": "Bandra, Mumbai",
+                    "ethnicity": "Indian",
+                    "gender": "Male",
+                    "personaType": "Urban Gen Z Content Creator",
+                    "about": "Ritvik Kapoor, a 23-year-old Gen Z YouTuber, is carving out a niche as a content creator focusing on the vibrant city life of Mumbai. With primary education as his academic background, he has leaned heavily on his creativity and adventurous spirit to make his mark. Ritvik resides in Bandra, a bustling, culturally rich suburb of Mumbai known for its blend of urban and coastal lifestyles. Despite his minimalist approach to life, he's deeply invested in creating stories that resonate with urban audiences. Ritvik earns around ₹750,000 to ₹990,000 annually through YouTube partnerships and collaborations, reflecting his growing influence as an early adopter in the digital content space.",
+                    "goalsAndMotivations": [
+                        "To create impactful content that portrays authentic urban life experiences.",
+                        "To gain a loyal subscriber base that values creativity and storytelling.",
+                        "To explore sustainable living and integrate these themes into his YouTube content.",
+                        "To become a recognized and monetarily stable content creator while staying true to his minimalist lifestyle."
+                    ],
+                    "frustrations": [
+                        "The competitive nature of YouTube and the challenge of standing out amidst numerous creators.",
+                        "Balancing creative independence with the necessity of monetizing content.",
+                        "Limited time and resources to experiment with expensive filming gear and editing tools.",
+                        "Navigating shifting YouTube algorithm changes that affect video visibility."
+                    ],
+                    "needState": "Expressive and ambitious.",
+                    "occasions": "Consumes relevant content from competitors and associates to stay updated on trends, or creates and uploads his own content during weekdays and weekends.",
+                    "image": "https://blobvirtualpersona.blob.core.windows.net/personaimgs/persona_4849738e-8971-435c-878c-274810",
+                    "userId": 15,
+                    "createdAt": "2025-09-25T16:08:28.63016",
+                    "requestParams": null
+                },
+                {
+                    "id": 153,
+                    "generatedTitle": "Mr. YouTube: Urban YouTuber on the Rise",
+                    "personaName": "Ritvik Kapoor",
+                    "age": 23,
+                    "location": "Bandra, Mumbai",
+                    "ethnicity": "Indian",
+                    "gender": "Male",
+                    "personaType": "Urban Gen Z Content Creator",
+                    "about": "Ritvik Kapoor, a 23-year-old Gen Z YouTuber, is carving out a niche as a content creator focusing on the vibrant city life of Mumbai. With primary education as his academic background, he has leaned heavily on his creativity and adventurous spirit to make his mark. Ritvik resides in Bandra, a bustling, culturally rich suburb of Mumbai known for its blend of urban and coastal lifestyles. Despite his minimalist approach to life, he's deeply invested in creating stories that resonate with urban audiences. Ritvik earns around ₹750,000 to ₹990,000 annually through YouTube partnerships and collaborations, reflecting his growing influence as an early adopter in the digital content space.",
+                    "goalsAndMotivations": [
+                        "To create impactful content that portrays authentic urban life experiences.",
+                        "To gain a loyal subscriber base that values creativity and storytelling.",
+                        "To explore sustainable living and integrate these themes into his YouTube content.",
+                        "To become a recognized and monetarily stable content creator while staying true to his minimalist lifestyle."
+                    ],
+                    "frustrations": [
+                        "The competitive nature of YouTube and the challenge of standing out amidst numerous creators.",
+                        "Balancing creative independence with the necessity of monetizing content.",
+                        "Limited time and resources to experiment with expensive filming gear and editing tools.",
+                        "Navigating shifting YouTube algorithm changes that affect video visibility."
+                    ],
+                    "needState": "Expressive and ambitious.",
+                    "occasions": "Consumes relevant content from competitors and associates to stay updated on trends, or creates and uploads his own content during weekdays and weekends.",
+                    "image": "https://blobvirtualpersona.blob.core.windows.net/personaimgs/persona_4849738e-8971-435c-878c-274810",
+                    "userId": 15,
+                    "createdAt": "2025-09-25T16:08:28.63016",
+                    "requestParams": null
+                }
+            ]
+        }
+    ]
+}
