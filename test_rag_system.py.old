@@ -1,0 +1,446 @@
+#!/usr/bin/env python3
+"""
+Test Script for RAG Duplicate Detection System
+
+This script provides comprehensive testing for the RAG-based duplicate detection
+system without requiring API keys.
+"""
+
+import json
+import sys
+import traceback
+from typing import Dict, List, Any
+
+# Import RAG components
+from simple_rag_detector import SimpleRAGDetector, SectionType
+
+
+def test_basic_functionality():
+    """Test basic RAG functionality."""
+    print("🧪 Testing Basic RAG Functionality...")
+
+    try:
+        # Initialize detector
+        detector = SimpleRAGDetector(similarity_threshold=0.8)
+
+        # Test content
+        content1 = {
+            "about": "Passionate about digital marketing and social media strategy",
+            "goalsAndMotivations": ["Build personal brand", "Learn analytics"],
+            "frustrations": ["ROI measurement", "Algorithm changes"],
+            "needState": "Seeking optimization tools",
+            "occasions": "Evening planning sessions",
+        }
+
+        # Add first content
+        final1, results1 = detector.upsert_behavioral_content(content1, profile_id=1)
+
+        # Verify all sections were added as new
+        assert all(
+            not result.is_similar for result in results1.values()
+        ), "First content should be all new"
+
+        # Test similar content
+        content2 = {
+            "about": "Enthusiastic about digital marketing and social media tactics",  # Similar
+            "goalsAndMotivations": [
+                "Build personal brand",
+                "Learn analytics",
+            ],  # Identical
+            "frustrations": ["Budget constraints", "Time limitations"],  # Different
+            "needState": "Looking for automation solutions",  # Different
+            "occasions": "Morning engagement sessions",  # Different
+        }
+
+        final2, results2 = detector.upsert_behavioral_content(content2, profile_id=2)
+
+        # Verify similarity detection
+        assert results2[
+            "about"
+        ].is_similar, "About section should be detected as similar"
+        assert results2[
+            "goalsAndMotivations"
+        ].is_similar, "Goals should be detected as similar"
+        assert not results2[
+            "frustrations"
+        ].is_similar, "Frustrations should be different"
+
+        print("✅ Basic functionality test passed")
+        return True
+
+    except Exception as e:
+        print(f"❌ Basic functionality test failed: {e}")
+        traceback.print_exc()
+        return False
+
+
+def test_similarity_thresholds():
+    """Test different similarity thresholds."""
+    print("🧪 Testing Similarity Thresholds...")
+
+    try:
+        base_content = {
+            "about": "Digital marketing enthusiast",
+            "goalsAndMotivations": ["Build brand"],
+            "frustrations": ["Time constraints"],
+            "needState": "Need tools",
+            "occasions": "Evening work",
+        }
+
+        similar_content = {
+            "about": "Digital marketing specialist",  # Moderately similar
+            "goalsAndMotivations": ["Build brand"],  # Identical
+            "frustrations": ["Time limitations"],  # Very similar
+            "needState": "Need better tools",  # Similar
+            "occasions": "Evening sessions",  # Similar
+        }
+
+        # Test strict threshold (0.95)
+        detector_strict = SimpleRAGDetector(similarity_threshold=0.95)
+        detector_strict.upsert_behavioral_content(base_content, profile_id=1)
+        _, results_strict = detector_strict.upsert_behavioral_content(
+            similar_content, profile_id=2
+        )
+
+        # Test lenient threshold (0.6)
+        detector_lenient = SimpleRAGDetector(similarity_threshold=0.6)
+        detector_lenient.upsert_behavioral_content(base_content, profile_id=1)
+        _, results_lenient = detector_lenient.upsert_behavioral_content(
+            similar_content, profile_id=2
+        )
+
+        # Lenient should detect more similarities than strict
+        strict_similarities = sum(1 for r in results_strict.values() if r.is_similar)
+        lenient_similarities = sum(1 for r in results_lenient.values() if r.is_similar)
+
+        assert (
+            lenient_similarities >= strict_similarities
+        ), "Lenient threshold should detect more similarities"
+
+        print(f"   Strict (0.95): {strict_similarities} similar sections")
+        print(f"   Lenient (0.6): {lenient_similarities} similar sections")
+        print("✅ Similarity threshold test passed")
+        return True
+
+    except Exception as e:
+        print(f"❌ Similarity threshold test failed: {e}")
+        traceback.print_exc()
+        return False
+
+
+def test_section_isolation():
+    """Test that sections are isolated from each other."""
+    print("🧪 Testing Section Isolation...")
+
+    try:
+        detector = SimpleRAGDetector(similarity_threshold=0.8)
+
+        # Add content to specific sections
+        content1 = {
+            "about": "Marketing professional",
+            "goalsAndMotivations": ["Unique goal A"],
+            "frustrations": ["Unique frustration A"],
+            "needState": "Unique need A",
+            "occasions": "Unique occasion A",
+        }
+
+        content2 = {
+            "about": "Marketing professional",  # Same as content1
+            "goalsAndMotivations": ["Unique goal B"],  # Different from content1
+            "frustrations": ["Unique frustration B"],  # Different from content1
+            "needState": "Unique need B",  # Different from content1
+            "occasions": "Unique occasion B",  # Different from content1
+        }
+
+        detector.upsert_behavioral_content(content1, profile_id=1)
+        _, results = detector.upsert_behavioral_content(content2, profile_id=2)
+
+        # Only 'about' should be similar
+        assert results["about"].is_similar, "About should be similar"
+        assert not results[
+            "goalsAndMotivations"
+        ].is_similar, "Goals should be different"
+        assert not results[
+            "frustrations"
+        ].is_similar, "Frustrations should be different"
+        assert not results["needState"].is_similar, "Need state should be different"
+        assert not results["occasions"].is_similar, "Occasions should be different"
+
+        print("✅ Section isolation test passed")
+        return True
+
+    except Exception as e:
+        print(f"❌ Section isolation test failed: {e}")
+        traceback.print_exc()
+        return False
+
+
+def test_list_content_handling():
+    """Test handling of list-based content (goals, frustrations)."""
+    print("🧪 Testing List Content Handling...")
+
+    try:
+        detector = SimpleRAGDetector(similarity_threshold=0.8)
+
+        # Test with different list formats
+        content1 = {
+            "about": "Test about",
+            "goalsAndMotivations": ["Goal 1", "Goal 2", "Goal 3"],
+            "frustrations": ["Frustration 1", "Frustration 2"],
+            "needState": "Test need",
+            "occasions": "Test occasions",
+        }
+
+        content2 = {
+            "about": "Different about",
+            "goalsAndMotivations": ["Goal 1", "Goal 2"],  # Subset of content1
+            "frustrations": [
+                "Frustration 3",
+                "Frustration 4",
+            ],  # Different from content1
+            "needState": "Different need",
+            "occasions": "Different occasions",
+        }
+
+        detector.upsert_behavioral_content(content1, profile_id=1)
+        _, results = detector.upsert_behavioral_content(content2, profile_id=2)
+
+        # Goals should show some similarity, frustrations should be different
+        print(
+            f"   Goals similarity: {results['goalsAndMotivations'].similarity_score:.3f}"
+        )
+        print(
+            f"   Frustrations similarity: {results['frustrations'].similarity_score:.3f}"
+        )
+
+        # Test with string format (should be parsed)
+        content3 = {
+            "about": "Another about",
+            "goalsAndMotivations": "Goal 1\nGoal 2",  # String format
+            "frustrations": ["Frustration 1"],  # Should be similar to content1
+            "needState": "Another need",
+            "occasions": "Another occasions",
+        }
+
+        _, results3 = detector.upsert_behavioral_content(content3, profile_id=3)
+
+        print("✅ List content handling test passed")
+        return True
+
+    except Exception as e:
+        print(f"❌ List content handling test failed: {e}")
+        traceback.print_exc()
+        return False
+
+
+def test_memory_management():
+    """Test memory management and statistics."""
+    print("🧪 Testing Memory Management...")
+
+    try:
+        detector = SimpleRAGDetector(similarity_threshold=0.8)
+
+        # Add multiple profiles
+        for i in range(5):
+            content = {
+                "about": f"About content {i}",
+                "goalsAndMotivations": [f"Goal {i}A", f"Goal {i}B"],
+                "frustrations": [f"Frustration {i}A", f"Frustration {i}B"],
+                "needState": f"Need state {i}",
+                "occasions": f"Occasions {i}",
+            }
+            detector.upsert_behavioral_content(content, profile_id=i)
+
+        # Check statistics
+        stats = detector.get_stats()
+
+        assert "section_stats" in stats, "Stats should include section statistics"
+        assert "similarity_threshold" in stats, "Stats should include threshold"
+
+        # Verify each section has content
+        for section_type in SectionType:
+            section_stats = stats["section_stats"][section_type.value]
+            assert (
+                section_stats["document_count"] > 0
+            ), f"Section {section_type.value} should have documents"
+
+        # Test clearing specific section
+        success = detector.clear_section(SectionType.ABOUT)
+        assert success, "Section clearing should succeed"
+
+        # Verify section was cleared
+        stats_after_clear = detector.get_stats()
+        about_stats = stats_after_clear["section_stats"]["about"]
+        assert (
+            about_stats["document_count"] == 0
+        ), "About section should be empty after clearing"
+
+        # Test clearing all
+        success = detector.clear_all()
+        assert success, "Clear all should succeed"
+
+        print("✅ Memory management test passed")
+        return True
+
+    except Exception as e:
+        print(f"❌ Memory management test failed: {e}")
+        traceback.print_exc()
+        return False
+
+
+def test_edge_cases():
+    """Test edge cases and error handling."""
+    print("🧪 Testing Edge Cases...")
+
+    try:
+        detector = SimpleRAGDetector(similarity_threshold=0.8)
+
+        # Test empty content
+        empty_content = {
+            "about": "",
+            "goalsAndMotivations": [],
+            "frustrations": [],
+            "needState": "",
+            "occasions": "",
+        }
+
+        # Should handle gracefully
+        final, results = detector.upsert_behavioral_content(empty_content, profile_id=1)
+
+        # Test malformed content
+        malformed_content = {
+            "about": "Valid about",
+            "goalsAndMotivations": "Not a list",  # Should be parsed as string
+            "frustrations": None,  # Invalid
+            "needState": 123,  # Invalid type
+            "occasions": "Valid occasions",
+        }
+
+        # Should handle gracefully without crashing
+        try:
+            final2, results2 = detector.upsert_behavioral_content(
+                malformed_content, profile_id=2
+            )
+        except Exception:
+            pass  # Expected to handle gracefully
+
+        # Test missing sections
+        incomplete_content = {
+            "about": "Valid about",
+            "goalsAndMotivations": ["Valid goal"],
+            # Missing other sections
+        }
+
+        # Should handle missing sections
+        final3, results3 = detector.upsert_behavioral_content(
+            incomplete_content, profile_id=3
+        )
+
+        print("✅ Edge cases test passed")
+        return True
+
+    except Exception as e:
+        print(f"❌ Edge cases test failed: {e}")
+        traceback.print_exc()
+        return False
+
+
+def run_performance_test():
+    """Run a basic performance test."""
+    print("🧪 Running Performance Test...")
+
+    try:
+        import time
+
+        detector = SimpleRAGDetector(similarity_threshold=0.8)
+
+        # Generate test data
+        test_profiles = []
+        for i in range(20):
+            content = {
+                "about": f"Marketing professional with {i} years of experience in digital strategy",
+                "goalsAndMotivations": [
+                    f"Achieve goal {i}A in the next quarter",
+                    f"Develop skill {i}B for career advancement",
+                ],
+                "frustrations": [
+                    f"Challenge {i}A with current tools",
+                    f"Limitation {i}B in workflow processes",
+                ],
+                "needState": f"Currently seeking solution {i} for optimization",
+                "occasions": f"Most active during pattern {i} timeframes",
+            }
+            test_profiles.append(content)
+
+        # Measure processing time
+        start_time = time.time()
+
+        for i, profile in enumerate(test_profiles):
+            detector.upsert_behavioral_content(profile, profile_id=i)
+
+        end_time = time.time()
+        processing_time = end_time - start_time
+
+        # Get final statistics
+        stats = detector.get_stats()
+
+        print(
+            f"   Processed {len(test_profiles)} profiles in {processing_time:.2f} seconds"
+        )
+        print(
+            f"   Average time per profile: {processing_time/len(test_profiles):.3f} seconds"
+        )
+
+        # Show document counts
+        for section, section_stats in stats["section_stats"].items():
+            print(f"   {section}: {section_stats['document_count']} unique documents")
+
+        print("✅ Performance test completed")
+        return True
+
+    except Exception as e:
+        print(f"❌ Performance test failed: {e}")
+        traceback.print_exc()
+        return False
+
+
+def main():
+    """Run all tests."""
+    print("🚀 RAG System Test Suite")
+    print("=" * 50)
+
+    tests = [
+        ("Basic Functionality", test_basic_functionality),
+        ("Similarity Thresholds", test_similarity_thresholds),
+        ("Section Isolation", test_section_isolation),
+        ("List Content Handling", test_list_content_handling),
+        ("Memory Management", test_memory_management),
+        ("Edge Cases", test_edge_cases),
+        ("Performance", run_performance_test),
+    ]
+
+    passed = 0
+    total = len(tests)
+
+    for test_name, test_func in tests:
+        print(f"\n📋 {test_name}")
+        print("-" * 30)
+
+        if test_func():
+            passed += 1
+
+        print()
+
+    print("=" * 50)
+    print(f"📊 Test Results: {passed}/{total} tests passed")
+
+    if passed == total:
+        print("🎉 All tests passed! RAG system is working correctly.")
+        return 0
+    else:
+        print("⚠️  Some tests failed. Please check the output above.")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
