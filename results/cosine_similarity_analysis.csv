@@ -1,0 +1,13 @@
+input_persona_id,synthetic_profile_id,section,similarity_score,interpretation,input_text_length,synthetic_text_length,comparison_type
+1,Input_2,about,0.0,Very Similar,689,689,Input-to-Input (Demo)
+1,Input_2,goals,-0.0,Very Similar,340,340,Input-to-Input (Demo)
+1,Input_2,frustrations,-0.0,Very Similar,331,331,Input-to-Input (Demo)
+1,Input_2,need_state,-0.0,Very Similar,25,25,Input-to-Input (Demo)
+1,Input_2,occasions,0.0,Very Similar,153,153,Input-to-Input (Demo)
+1,Input_2,combined,0.0,Very Similar,1542,1542,Input-to-Input (Demo)
+2,Input_1,about,0.0,Very Similar,689,689,Input-to-Input (Demo)
+2,Input_1,goals,-0.0,Very Similar,340,340,Input-to-Input (Demo)
+2,Input_1,frustrations,-0.0,Very Similar,331,331,Input-to-Input (Demo)
+2,Input_1,need_state,-0.0,Very Similar,25,25,Input-to-Input (Demo)
+2,Input_1,occasions,0.0,Very Similar,153,153,Input-to-Input (Demo)
+2,Input_1,combined,0.0,Very Similar,1542,1542,Input-to-Input (Demo)

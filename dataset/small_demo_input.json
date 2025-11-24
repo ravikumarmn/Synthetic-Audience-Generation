@@ -2,7 +2,7 @@
     "request": [
         {
             "filter_details": {
-                "user_req_responses": 5,
+                "user_req_responses": 10,
                 "age_filter": {
                     "lower_bound": 18,
                     "upper_bound": 79
